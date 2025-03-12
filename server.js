@@ -504,6 +504,7 @@ app.delete('/api/users/:id', authenticateToken, (req, res) => {
 
 // Login route
 app.post('/api/login', async (req, res) => {
+  console.log('Login API Hit');
   try {
     const { username, password } = req.body;
     
