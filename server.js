@@ -44,12 +44,13 @@ const handleUpload = (req, res, next) => {
 };
 
 // MySQL Connection
+const [host, port] = (process.env.DB_HOST || 'localhost:3306').split(':');
 const db = mysql.createConnection({
-  host: '172.31.0.100',
-  port: 3306,
-  user: 'root',
-  password: 'place-your-password-here',
-  database: 'pscmrnews'
+  host: host,
+  port: parseInt(port) || 3306,
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || 'pscmr_news'
 });
 
 db.connect((err) => {
