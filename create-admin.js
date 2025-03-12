@@ -3,10 +3,11 @@ const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 const db = mysql.createConnection({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME
+  host: '172.31.0.100',
+  port: 3306,
+  user: 'root',
+  password: 'place-your-password-here',
+  database: 'pscmrnews'
 });
 
 async function createAdmin() {
