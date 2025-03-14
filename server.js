@@ -12,7 +12,30 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
+
+// Enhanced CORS configuration for React Native
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:19006', 'http://localhost:19000', 'http://localhost:19001', 'http://localhost:19002', 'exp://*'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+// Get local IP address for React Native access
+const getLocalIp = () => {
+  const interfaces = require('os').networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'localhost';
+};
+
+const LOCAL_IP = getLocalIp();
+const PORT = process.env.PORT || 5000;
 
 // Configure multer for memory storage (for S3 upload)
 const storage = multer.memoryStorage();
@@ -48,9 +71,9 @@ const [host, port] = (process.env.DB_HOST || 'localhost:3306').split(':');
 const db = mysql.createConnection({
   host: host,
   port: parseInt(port) || 3306,
-  user: process.env.DB_USER || 'root',
+  user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME || 'pscmr_news'
+  database: process.env.DB_NAME
 });
 
 db.connect((err) => {
@@ -622,10 +645,10 @@ app.post('/api/news', authenticateToken, handleUpload, async (req, res) => {
         console.log('S3 upload successful:', imageUrl);
       } catch (uploadError) {
         console.error('S3 Upload Error:', uploadError);
-        return res.status(500).json({ 
-          message: 'Error uploading image to S3', 
-          error: uploadError.message,
-          details: uploadError.stack
+        return res.status(500).json({
+          success: false,
+          message: 'Error uploading image to S3',
+          error: uploadError.message
         });
       }
     }
@@ -645,7 +668,8 @@ app.post('/api/news', authenticateToken, handleUpload, async (req, res) => {
 
     console.log('Database insert successful:', result);
 
-    res.status(201).json({ 
+    res.status(201).json({
+      success: true,
       message: 'News created successfully',
       newsId: result.insertId,
       imageUrl
@@ -657,10 +681,10 @@ app.post('/api/news', authenticateToken, handleUpload, async (req, res) => {
       code: error.code,
       sqlMessage: error.sqlMessage
     });
-    res.status(500).json({ 
-      message: 'Error saving news', 
-      error: error.message,
-      sqlError: error.sqlMessage
+    res.status(500).json({
+      success: false,
+      message: 'Error saving news',
+      error: error.message
     });
   }
 });
@@ -690,10 +714,10 @@ app.put('/api/news/:id', authenticateToken, handleUpload, async (req, res) => {
         console.log('S3 upload successful:', imageUrl);
       } catch (uploadError) {
         console.error('S3 Upload Error:', uploadError);
-        return res.status(500).json({ 
-          message: 'Error uploading image to S3', 
-          error: uploadError.message,
-          details: uploadError.stack
+        return res.status(500).json({
+          success: false,
+          message: 'Error uploading image to S3',
+          error: uploadError.message
         });
       }
     }
@@ -716,16 +740,17 @@ app.put('/api/news/:id', authenticateToken, handleUpload, async (req, res) => {
       created_by: news[0].created_by
     };
 
-    res.json({ 
+    res.json({
+      success: true,
       message: 'News updated successfully',
       news: updatedNews
     });
   } catch (error) {
     console.error('Error updating news:', error);
-    res.status(500).json({ 
+    res.status(500).json({
+      success: false,
       message: 'Error updating news',
-      error: error.message,
-      sqlError: error.sqlMessage
+      error: error.message
     });
   }
 });
@@ -833,6 +858,94 @@ app.get('/api/news', async (req, res) => {
   }
 });
 
+// Get news by category ID
+app.get('/api/news/category/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    const [news, total] = await Promise.all([
+      query(`
+        SELECT n.*, c.name as category_name, u.username as author_name 
+        FROM news n 
+        LEFT JOIN categories c ON n.category_id = c.id 
+        LEFT JOIN users u ON n.created_by = u.id 
+        WHERE n.category_id = ? 
+        ORDER BY n.created_at DESC 
+        LIMIT ? OFFSET ?
+      `, [categoryId, parseInt(limit), parseInt(offset)]),
+      query('SELECT COUNT(*) as count FROM news WHERE category_id = ?', [categoryId])
+    ]);
+
+    // Process image URLs based on storage location
+    news.forEach(item => {
+      if (item.image_url) {
+        if (!item.image_url.includes('amazonaws.com')) {
+          item.image_url = `http://15.206.210.83:5000${item.image_url}`;
+        }
+      } else {
+        item.image_url = '/src/styles/placeholder.jpg';
+      }
+    });
+
+    res.json({
+      success: true,
+      data: news,
+      total: total[0].count,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(total[0].count / limit)
+    });
+  } catch (error) {
+    console.error('Error fetching news by category:', error);
+    res.status(500).json({ success: false, message: 'Error fetching news by category' });
+  }
+});
+
+// Get news by user ID
+app.get('/api/news/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    const [news, total] = await Promise.all([
+      query(`
+        SELECT n.*, c.name as category_name, u.username as author_name 
+        FROM news n 
+        LEFT JOIN categories c ON n.category_id = c.id 
+        LEFT JOIN users u ON n.created_by = u.id 
+        WHERE n.created_by = ? 
+        ORDER BY n.created_at DESC 
+        LIMIT ? OFFSET ?
+      `, [userId, parseInt(limit), parseInt(offset)]),
+      query('SELECT COUNT(*) as count FROM news WHERE created_by = ?', [userId])
+    ]);
+
+    // Process image URLs based on storage location
+    news.forEach(item => {
+      if (item.image_url) {
+        if (!item.image_url.includes('amazonaws.com')) {
+          item.image_url = `http://15.206.210.83:5000${item.image_url}`;
+        }
+      } else {
+        item.image_url = '/src/styles/placeholder.jpg';
+      }
+    });
+
+    res.json({
+      success: true,
+      data: news,
+      total: total[0].count,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(total[0].count / limit)
+    });
+  } catch (error) {
+    console.error('Error fetching news by user:', error);
+    res.status(500).json({ success: false, message: 'Error fetching news by user' });
+  }
+});
+
 // Delete all news and categories
 app.delete('/api/clear-all', authenticateToken, async (req, res) => {
   if (req.user.role !== 'admin') {
@@ -864,5 +977,181 @@ app.delete('/api/clear-all', authenticateToken, async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// Search news
+app.get('/api/news/search', async (req, res) => {
+  try {
+    const { query, page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    if (!query) {
+      return res.status(400).json({ success: false, message: 'Search query is required' });
+    }
+
+    const searchQuery = `%${query}%`;
+    const [news, totalCount] = await Promise.all([
+      query(
+        `SELECT n.*, c.name as category_name, u.username as author_name 
+         FROM news n 
+         LEFT JOIN categories c ON n.category_id = c.id 
+         LEFT JOIN users u ON n.created_by = u.id 
+         WHERE n.title LIKE ? OR n.content LIKE ? 
+         ORDER BY n.created_at DESC 
+         LIMIT ? OFFSET ?`,
+        [searchQuery, searchQuery, parseInt(limit), offset]
+      ),
+      query(
+        'SELECT COUNT(*) as count FROM news WHERE title LIKE ? OR content LIKE ?',
+        [searchQuery, searchQuery]
+      )
+    ]);
+
+    const total = totalCount[0].count;
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      success: true,
+      data: news,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalItems: total,
+        hasMore: page < totalPages
+      }
+    });
+  } catch (error) {
+    console.error('Error searching news:', error);
+    res.status(500).json({ success: false, message: 'Error searching news' });
+  }
+});
+
+// Search users
+app.get('/api/users/search', authenticateToken, async (req, res) => {
+  try {
+    const { query, page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    if (!query) {
+      return res.status(400).json({ success: false, message: 'Search query is required' });
+    }
+
+    const searchQuery = `%${query}%`;
+    const [users, totalCount] = await Promise.all([
+      query(
+        `SELECT id, username, role, created_at 
+         FROM users 
+         WHERE username LIKE ? 
+         ORDER BY created_at DESC 
+         LIMIT ? OFFSET ?`,
+        [searchQuery, parseInt(limit), offset]
+      ),
+      query(
+        'SELECT COUNT(*) as count FROM users WHERE username LIKE ?',
+        [searchQuery]
+      )
+    ]);
+
+    const total = totalCount[0].count;
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      success: true,
+      data: users,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalItems: total,
+        hasMore: page < totalPages
+      }
+    });
+  } catch (error) {
+    console.error('Error searching users:', error);
+    res.status(500).json({ success: false, message: 'Error searching users' });
+  }
+});
+
+// Get all users (public endpoint)
+app.get('/api/users/all', async (req, res) => {
+  try {
+    const { page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    const [users, totalCount] = await Promise.all([
+      query(
+        `SELECT id, username, created_at 
+         FROM users 
+         ORDER BY created_at DESC 
+         LIMIT ? OFFSET ?`,
+        [parseInt(limit), offset]
+      ),
+      query('SELECT COUNT(*) as count FROM users')
+    ]);
+
+    const total = totalCount[0].count;
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      success: true,
+      data: users,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalItems: total,
+        hasMore: page < totalPages
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ success: false, message: 'Error fetching users' });
+  }
+});
+
+// Get news by user ID (public endpoint)
+app.get('/api/users/:userId/news', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    // First check if user exists
+    const userExists = await query('SELECT id FROM users WHERE id = ?', [userId]);
+    if (userExists.length === 0) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const [news, totalCount] = await Promise.all([
+      query(
+        `SELECT n.*, c.name as category_name, u.username as author_name 
+         FROM news n 
+         LEFT JOIN categories c ON n.category_id = c.id 
+         LEFT JOIN users u ON n.created_by = u.id 
+         WHERE n.created_by = ? 
+         ORDER BY n.created_at DESC 
+         LIMIT ? OFFSET ?`,
+        [userId, parseInt(limit), offset]
+      ),
+      query(
+        'SELECT COUNT(*) as count FROM news WHERE created_by = ?',
+        [userId]
+      )
+    ]);
+
+    const total = totalCount[0].count;
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      success: true,
+      data: news,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalItems: total,
+        hasMore: page < totalPages
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user news:', error);
+    res.status(500).json({ success: false, message: 'Error fetching user news' });
+  }
+});
+
+app.listen(PORT, () => console.log(`Server running on ${LOCAL_IP}:${PORT}`));
